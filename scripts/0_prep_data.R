@@ -7,6 +7,7 @@ library(terra)                # GIS functions
 library(sf)                   # vector functions
 library(rnaturalearth)        # get countries oulintes
 library(rnaturalearthdata)    # ' '
+library(httr)                 # download GLAD via GEE url
 
 # ROI --------------------------------------------------------------------
 # First generate shapefile defining region of interest to crop
@@ -80,16 +81,69 @@ for (lyr in layers) {
 
 
 # GLAD --------------------------------------------------------------------
+# This section downloads all the tiles of LULC data touching our ROI
+# then merges them together and masks to ROI.
+# Define the latitude and longitude ranges
+# Direct download available via: https://storage.googleapis.com/earthenginepartners-hansen/GLCLU2000-2020/v2/download.html
+
+## All possible lats/longs for continent tiles
+latitudes <- seq(-30, 40, by = 10)
+longitudes <- seq(-30, 50, by = 10)  
+
+## Generate the combinations of latitude and longitude
+coords <- expand.grid(lat = latitudes, lon = longitudes)
+
+## Format the lons/lats to match file naming convention
+coords_NS <- coords %>%
+  mutate(
+    lon_formatted = case_when(lon < 0 ~ sprintf("%03dW", abs(lon)), # format neg lons with W
+                              .default = sprintf("%03dE", lon)),    # format positive lons with E
+    lat_formatted = case_when(lat < 0 ~ sprintf("%02dS", abs(lat)), 
+                              .default = sprintf("%02dN", lat))
+    )
 
 
+## Create list of all possible file names for African continetn
+africa_coords <- paste0(
+  "https://storage.googleapis.com/earthenginepartners-hansen/GLCLU2000-2020/v2/2020/",
+  coords_NS$lat_formatted,
+  "_",
+  coords_NS$lon_formatted,
+  ".tif"
+)
 
+## Get list of all the 2020 tiles worldwide
+url_2020 <- "https://storage.googleapis.com/earthenginepartners-hansen/GLCLU2000-2020/v2/2020.txt"
+all_2020_tiles <- readLines(url_2020)
 
+## Only return tiles in African continent
+africa_tiles <- intersect(all_2020_tiles, africa_coords)
 
+## Download all raster tiles
+map(africa_tiles, function(url) {
+  GET(url, 
+      write_disk(file.path(here("data/GLAD/tiles"), basename(url)), 
+                 overwrite = TRUE))
+})
 
+## Merge together and crop/mask to Africa and SSA
+tiles <- list.files(here("data/GLAD/tiles/"),
+                    pattern = ".tif",
+                    full.names = TRUE)
+rasters <- lapply(tiles, rast)
 
+merged_r <- do.call(merge, rasters)
 
+africa_v <- vect(africa_sf) %>% 
+  project(., merged_r)
+ssa_v <- vect(ssa_sf) %>% 
+  project(., merged_r)
 
+glad_crop <- crop(merged_r, africa_v, mask = TRUE)
+writeRaster(glad_crop, here("data/GLAD/glad_africa_2020.tif"))
 
+glad_ssa_crop <- crop(glad_crop, ssa_v, mask = TRUE)
+writeRaster(glad_ssa_crop, here("data/GLAD/glad_ssa_2020.tif"))
 
 
 
