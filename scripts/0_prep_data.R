@@ -178,6 +178,7 @@ reclass_m <- matrix(c(
   250, Inf, 0     # remove built-up and ocean
 ), ncol = 3, byrow = TRUE)
 
+
 ## function for reclassifying
 reclass_30m_glad <- function(tile) {
     ## read in raster
@@ -195,32 +196,28 @@ reclass_30m_glad <- function(tile) {
 }
 
 ## run fxn for all tiles
-map(tiles, reclass_30m_glad, .progress = TRUE)
+map(.x = tiles, .f = reclass_30m_glad, .progress = TRUE)
 
 
 
 ## Get list of reclassified 30m tiles
-tiles30m_list <- list.files(dir_30m,
-                            pattern = ".tif",
-                            full.names = TRUE)
+tiles_rcl_list <- list.files(dir_30m, pattern = ".tif", full.names = TRUE)
 
 ## Aggregate and resample to match NatureBase (~1km)
-## NOTE: Do we want to go with max or modal function? 
 resample_1km_glad <- function(tile, fun) {
   ## read in
   r <- rast(tile)
   
   ## get file name
   fname <- basename(tile) %>% 
-    # gsub("30m", "1km", x=.)
-    gsub("30m", "1km_modal", x=.)
+    gsub("30m", paste0("1km_", fun), x=.)
   
-  ## match resolution of NatureBase
+  ## match resolution & extent of NatureBase
+  ## first aggregate to get close, then resample to match exactly
   factor <- ceiling(res(naturebase_r)[1] / res(r)[1])
   r_agg <- terra::aggregate(r,
                             fact = factor,
-                            # fun = "max")
-                            fun = "modal") ## if any part is 1, make whole thing 1
+                            fun = fun) 
   r_resample <- resample(r_agg, naturebase_r, method = "near")
   
   ## save
@@ -229,34 +226,30 @@ resample_1km_glad <- function(tile, fun) {
               overwrite = TRUE)
 }
 
-plan(multisession, workers = 6) 
-map(tiles30m_list, resample_1km_glad, .progress = TRUE)
+plan(multisession, workers = 10) 
+map(.x = tiles_rcl_list, 
+    .f = resample_1km_glad, 
+    fun = "modal", #NOTE: need to decide on max vs modal for aggregating 
+    .progress=TRUE)
 plan(sequential)
 
-## Merge and mask to Africa ----------------------
+
+## Merge and mask to SSA ------------------------
 ## get all tiles
 # fnames <- list.files(dir_1km, pattern = "*.tif$", full.names = TRUE)
 fnames <- list.files(dir_1km, pattern = "*modal.tif", full.names = TRUE)
 
 ## stack them & merge
-# stack <- lapply(fnames, rast)
-# merged <- do.call(terra::merge, stack)
-
-### Not sure why, terra::merge results in continuous layer despite 
-### all inputs being binary. terra::vrt combines them better as binary
-### Can dig deeper into difference here later...
-### NOTE: may have been due to saving the agg rather than resampled raster in function...
-### can re-run and test if the resampled version works better or if it just makes the whole thing take longer
-merged_r <- vrt(fnames) 
+stack <- lapply(fnames, rast)
+merged <- do.call(terra::merge, stack)
 
 ## Crop/mask and export
 # crs(ssa_sf) == crs(merged_r)
 # [1] TRUE
 ssa_v <- vect(ssa_sf)
 
-merged_ssa_r <- crop(merged_r, ssa_v, mask = TRUE)
+merged_ssa_r <- crop(merged, ssa_v, mask = TRUE)
 
 writeRaster(merged_ssa_r, 
-            # here("data/GLAD/glad_2020_ssa_maxbinary_1km.tif"),
-            here("data/GLAD/glad_2020_ssa_modalbinary_1km.tif"),
+            here("data/GLAD/glad_2020_ssa_modal_binary_1km.tif"),
             overwrite = TRUE)
