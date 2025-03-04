@@ -9,7 +9,7 @@ library(sf)                   # vector functions
 library(rnaturalearth)        # get countries oulintes
 library(rnaturalearthdata)    # " "
 library(httr)                 # download GLAD via GEE url
-library(furrr)                # faster parallel processing
+library(furrr)                # loads future and purrr
 
 
 # ROI --------------------------------------------------------------------
@@ -110,21 +110,21 @@ longitudes <- seq(-20, 40, by = 10)
 coords <- expand.grid(lat = latitudes, lon = longitudes)
 
 ## Format the lons/lats to match file naming convention
-coords_NS <- coords %>%
+coords_formatted <- coords %>%
   mutate(
-    lon_formatted = case_when(lon < 0 ~ sprintf("%03dW", abs(lon)), # format neg lons with W
-                              .default = sprintf("%03dE", lon)),    # format positive lons with E
-    lat_formatted = case_when(lat < 0 ~ sprintf("%02dS", abs(lat)), 
-                              .default = sprintf("%02dN", lat))
-    )
+    lon = case_when(lon < 0 ~ sprintf("%03dW", abs(lon)), # format neg lons with W
+                    .default = sprintf("%03dE", lon)),    # format positive lons with E
+    lat = case_when(lat < 0 ~ sprintf("%02dS", abs(lat)), 
+                    .default = sprintf("%02dN", lat))
+  )
 
 
 ## Create list of all possible file names for SSA
 ssa_coords <- paste0(
   "https://storage.googleapis.com/earthenginepartners-hansen/GLCLU2000-2020/v2/2020/",
-  coords_NS$lat_formatted,
+  coords_formatted$lat,
   "_",
-  coords_NS$lon_formatted,
+  coords_formatted$lon,
   ".tif"
 )
 
@@ -143,3 +143,65 @@ purrr::map(ssa_tiles, function(url) {
 })
 
 
+# Impervious Surfaces --------------------------------------------------------
+# Process tiles from impervious surface map.
+# Can download here: https://zenodo.org/records/3505079
+# NOTE: May be incorporated into other script, but for now reclassifying here to
+# make next steps faster and comparison easier
+
+## Similar process as GLAD, but with slightly different formatting
+latitudes <- seq(-30, 30, by = 10)
+longitudes <- seq(-20, 40, by = 10)  
+
+## Generate the combinations of latitude and longitude
+coords <- expand.grid(lat = latitudes, lon = longitudes)
+
+## Format the lons/lats to match file naming convention
+coords_formatted <- coords %>%
+  mutate(
+    lon = case_when(lon < 0 ~ sprintf("W%d", abs(lon)), # format neg lons with W
+                    .default = sprintf("E%d", lon)),    # format positive lons with E
+    lat = case_when(lat < 0 ~ sprintf("S%d", abs(lat)), 
+                    .default = sprintf("N%d", lat)),
+    lon_lat = paste0(lon, lat)
+  )
+
+
+## set filepath for impervious surface data
+imp_fpath <- here("data/Global Impervious Surfaces products")
+
+## list of all possible SSA tilenames
+ssa_tiles <- file.path(imp_fpath, "raw", paste0("ImperviousMap_", 
+                                                coords_formatted$lon_lat, 
+                                                ".tif"))
+
+## list all files in dataset
+all_imp_files <- list.files(file.path(imp_fpath, "raw"),
+                            pattern = "*.tif$", full.names = TRUE)
+
+## only keep those within SSA
+imp_tiles <- intersect(all_imp_files, ssa_tiles)
+
+
+## set output directory
+out_dir <- file.path(imp_fpath, "reclassified")
+if (!dir.exists(out_dir)) dir.create(out_dir)
+
+## binary reclassification matrix
+reclass_m <- matrix(c(
+  1, 0,   #1 becomes 0
+  2, 1    #2 becomes 1
+), ncol = 2, byrow = TRUE)
+
+
+## Reclassify all rasters
+multisession(workers = 8)
+purrr::map(imp_tiles, .progress = TRUE, function(x){
+    ## read in raster and reclassify 1s to 0s
+  r <- rast(x)
+  r_rcl <- classify(r, reclass_m)
+  
+  ## generate filename and save
+  fname <- paste0(basename(tools::file_path_sans_ext(x)), "_rcl.tif")
+  writeRaster(r_rcl, file.path(out_dir, fname))
+})
