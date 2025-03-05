@@ -114,7 +114,7 @@ coords_formatted <- coords %>%
   mutate(
     lon = case_when(lon < 0 ~ sprintf("%03dW", abs(lon)), # format neg lons with W
                     .default = sprintf("%03dE", lon)),    # format positive lons with E
-    lat = case_when(lat < 0 ~ sprintf("%02dS", abs(lat)), 
+    lat = case_when(lat < 0 ~ sprintf("%02dS", abs(lat)),
                     .default = sprintf("%02dN", lat))
   )
 
@@ -149,6 +149,10 @@ purrr::map(ssa_tiles, function(url) {
 # NOTE: May be incorporated into other script, but for now reclassifying here to
 # make next steps faster and comparison easier
 
+
+## set filepath for impervious surface data
+imp_fpath <- here("data/Global Impervious Surfaces products")
+
 ## Similar process as GLAD, but with slightly different formatting
 latitudes <- seq(-30, 30, by = 10)
 longitudes <- seq(-20, 40, by = 10)  
@@ -156,31 +160,35 @@ longitudes <- seq(-20, 40, by = 10)
 ## Generate the combinations of latitude and longitude
 coords <- expand.grid(lat = latitudes, lon = longitudes)
 
-## Format the lons/lats to match file naming convention
-coords_formatted <- coords %>%
+## Create df to match file naming conventions
+coords_df <- coords %>%
   mutate(
-    lon = case_when(lon < 0 ~ sprintf("W%d", abs(lon)), # format neg lons with W
-                    .default = sprintf("E%d", lon)),    # format positive lons with E
-    lat = case_when(lat < 0 ~ sprintf("S%d", abs(lat)), 
-                    .default = sprintf("N%d", lat)),
-    lon_lat = paste0(lon, lat)
-  )
+    ## get format used for imp surface data
+    lon_lat = paste0(case_when(lon < 0 ~ sprintf("W%d", abs(lon)), # format neg lons with W
+                               .default = sprintf("E%d", lon)), 
+                     case_when(lat < 0 ~ sprintf("S%d", abs(lat)), 
+                               .default = sprintf("N%d", lat))),
+    ## list of potential file names
+    fpath = file.path(imp_fpath, "raw", paste0("ImperviousMap_", lon_lat, ".tif")),
+    ## add formatting for GLAD data
+    lat_lon_glad = paste0(case_when(lat < 0 ~ sprintf("%02dS", abs(lat)),
+                                    .default = sprintf("%02dN", lat)),
+                          "_",
+                          case_when(lon < 0 ~ sprintf("%03dW", abs(lon)), # format neg lons with W
+                                    .default = sprintf("%03dE", lon)))
+  ) %>% 
+  dplyr::select(c(fpath, lat_lon_glad))
 
-
-## set filepath for impervious surface data
-imp_fpath <- here("data/Global Impervious Surfaces products")
-
-## list of all possible SSA tilenames
-ssa_tiles <- file.path(imp_fpath, "raw", paste0("ImperviousMap_", 
-                                                coords_formatted$lon_lat, 
-                                                ".tif"))
 
 ## list all files in dataset
-all_imp_files <- list.files(file.path(imp_fpath, "raw"),
-                            pattern = "*.tif$", full.names = TRUE)
+imp_files <- data.frame("fpath" = list.files(
+  file.path(imp_fpath, "raw"),
+  pattern = "*.tif$",
+  full.names = TRUE
+))
 
 ## only keep those within SSA
-imp_tiles <- intersect(all_imp_files, ssa_tiles)
+imp_tiles_df <- semi_join(coords_df, imp_files, by = "fpath")
 
 
 ## set output directory
@@ -195,13 +203,14 @@ reclass_m <- matrix(c(
 
 
 ## Reclassify all rasters
-multisession(workers = 8)
-purrr::map(imp_tiles, .progress = TRUE, function(x){
-    ## read in raster and reclassify 1s to 0s
-  r <- rast(x)
+plan(multisession, workers = 8)
+purrr::pmap(imp_tiles_df, .progress = TRUE, function(fpath, lat_lon_glad) {
+  ## read in raster and reclassify 1s to 0s
+  r <- rast(fpath)
   r_rcl <- classify(r, reclass_m)
   
   ## generate filename and save
-  fname <- paste0(basename(tools::file_path_sans_ext(x)), "_rcl.tif")
-  writeRaster(r_rcl, file.path(out_dir, fname))
+  fname <- paste0("ImperviousMap_", lat_lon_glad, "_rcl.tif")
+  writeRaster(r_rcl, file.path(out_dir, fname), datatype = "INT1U")
 })
+plan(sequential)
