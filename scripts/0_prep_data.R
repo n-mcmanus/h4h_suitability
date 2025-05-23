@@ -9,15 +9,14 @@ library(sf)                   # vector functions
 library(rnaturalearth)        # get countries oulintes
 library(rnaturalearthdata)    # " "
 library(httr)                 # download GLAD via GEE url
-library(furrr)                # loads future and purrr
+library(furrr)                # loads future and purrr packages
 
 
 # ROI --------------------------------------------------------------------
 
 # First generate shapefiles defining region of interest. 
 # These are used to crop and mask other data.
-# **NOTE: Originally looked at both continent and sub-Saharan Africa (SSA). 
-# **Moving forward, likely only considering SSA. 
+# **NOTE: Currently only evalauating sub-Saharan Africa (SSA). 
 
 ## Get continent from Natural Earth dataset
 africa_sf <- ne_countries(scale = "medium", returnclass = "sf") %>% 
@@ -25,20 +24,20 @@ africa_sf <- ne_countries(scale = "medium", returnclass = "sf") %>%
   ## filter out small and/or island territories
   mutate(area_km2 = as.numeric(st_area(.) / 1e6)) %>%
   filter(area_km2 > 5000,
-         admin != "Madagascar",
+         admin != "Madagascar",  # remove for now
          type != "Dependency")
 
-## get only sub saharan countries
+## Get only SSA countries
 ssa_sf <- africa_sf %>% 
   filter(region_wb == "Sub-Saharan Africa") 
-
 
 ## Save for later use
 dir_out <- here("data/ROI")
 if (!dir.exists(dir_out)) dir.create(dir_out)
 
-write_sf(africa_sf, file.path(dir_out, "africa_ne.shp"))
 write_sf(ssa_sf, file.path(dir_out, "ssa_ne.shp"))
+
+
 
 # NatureBase --------------------------------------------------------------
 
@@ -61,39 +60,32 @@ dir_out <- here("data/naturebase/africa")
 if (!dir.exists(dir_out)) dir.create(dir_out)
 
 
-## For each raster, crop & mask to ROI and export
+## For each global raster, crop & mask to ROI and export
 for (lyr in layers) {
+  print(paste("Working on:", lyr))
+  
   ## get file name
   fname <- paste0(lyr, "_tco2eha.tif")
   
   ## read in raster
   r <- rast(file.path(dir_in, fname))
   
-  # ## match vector to raster crs
-  # af_v <- africa_sf %>% 
-  #   vect() %>% 
-  #   project(., crs(r))
-  
+  ## match vector to raster crs
   ssa_v <- ssa_sf %>% 
     vect() %>% 
     project(., crs(r))
   
   ## crop & mask raster
-  # r_af <- crop(r, af_v, mask = TRUE)
   r_ssa <- crop(r, ssa_v, mask = TRUE)
   
   ## export
-  # writeRaster(r_af, 
-  #             file.path(dir_out, 
-  #                       paste0(tools::file_path_sans_ext(fname), "_afr.tif")),
-  #             overwrite = TRUE)
-  
   writeRaster(r_ssa, 
               file.path(dir_out, 
-                        paste0(tools::file_path_sans_ext(fname), "_ssa.tif")), 
+                        paste0(tools::file_path_sans_ext(fname), "_ssa.tif")),  # amend original file name
               overwrite = TRUE)
-  
 }
+
+
 
 
 # GLAD --------------------------------------------------------------------
@@ -144,14 +136,15 @@ purrr::map(ssa_tiles, function(url) {
 
 
 # Impervious Surfaces --------------------------------------------------------
-# Process tiles from impervious surface map.
-# Can download here: https://zenodo.org/records/3505079
-# NOTE: May be incorporated into other script, but for now reclassifying here to
-# make next steps faster and comparison easier
+
+# Process tiles from global impervious surface map.
+# This will be used to remove roads and other surfaces not classified as
+# urban in GLAD LULC
+# Data can be downloaded here: https://zenodo.org/records/3505079
 
 
 ## set filepath for impervious surface data
-imp_fpath <- here("data/Global Impervious Surfaces products")
+fpath <- here("data/Global Impervious Surfaces products")
 
 ## Similar process as GLAD, but with slightly different formatting
 latitudes <- seq(-30, 30, by = 10)
@@ -169,7 +162,7 @@ coords_df <- coords %>%
                      case_when(lat < 0 ~ sprintf("S%d", abs(lat)), 
                                .default = sprintf("N%d", lat))),
     ## list of potential file names
-    fpath = file.path(imp_fpath, "raw", paste0("ImperviousMap_", lon_lat, ".tif")),
+    fpath = file.path(fpath, "raw", paste0("ImperviousMap_", lon_lat, ".tif")),
     ## add formatting for GLAD data
     lat_lon_glad = paste0(case_when(lat < 0 ~ sprintf("%02dS", abs(lat)),
                                     .default = sprintf("%02dN", lat)),
@@ -180,22 +173,22 @@ coords_df <- coords %>%
   dplyr::select(c(fpath, lat_lon_glad))
 
 
-## list all files in dataset
+## List all files in dataset
 imp_files <- data.frame("fpath" = list.files(
-  file.path(imp_fpath, "raw"),
+  file.path(fpath, "raw"),
   pattern = "*.tif$",
   full.names = TRUE
 ))
 
-## only keep those within SSA
+## Only keep those within SSA
 imp_tiles_df <- semi_join(coords_df, imp_files, by = "fpath")
 
 
-## set output directory
-out_dir <- file.path(imp_fpath, "reclassified")
+## Set output directory
+out_dir <- file.path(fpath, "reclassified")
 if (!dir.exists(out_dir)) dir.create(out_dir)
 
-## binary reclassification matrix
+## Binary reclassification matrix
 reclass_m <- matrix(c(
   1, 0,   #1 becomes 0
   2, 1    #2 becomes 1
@@ -203,7 +196,7 @@ reclass_m <- matrix(c(
 
 
 ## Reclassify all rasters
-plan(multisession, workers = 8)
+plan(multisession, workers = 8) # use parallel processing if possible
 purrr::pmap(imp_tiles_df, .progress = TRUE, function(fpath, lat_lon_glad) {
   ## read in raster and reclassify 1s to 0s
   r <- rast(fpath)
@@ -211,6 +204,10 @@ purrr::pmap(imp_tiles_df, .progress = TRUE, function(fpath, lat_lon_glad) {
   
   ## generate filename and save
   fname <- paste0("ImperviousMap_", lat_lon_glad, "_rcl.tif")
-  writeRaster(r_rcl, file.path(out_dir, fname), datatype = "INT1U")
+  writeRaster(r_rcl, 
+              file.path(out_dir, fname), 
+              datatype = "INT1U",  # reduce file size
+              overwrite = TRUE)
 })
-plan(sequential)
+plan(sequential) # return to sequential processing
+
