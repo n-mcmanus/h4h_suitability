@@ -1,26 +1,44 @@
-# This script generates a raster of baseline H4H activity availability
-# based on criteria such as LULC, slope, etc.
+## Script: 1_base_availability.R
+##
+## Purpose: This script generates a binary raster of where H4H activity may 
+## or may not occur based on biophysical characteristics.
+##
+## Last updated: 02 June 2025
+##
+## Author: Nick McManus
+## Email: nmcmanus@conservation.org
+##
+## Notes: Still reviewing methodology for this layer. 
 
-## Read in packages
-library(tidyverse)            # always
-library(here)                 # easier file paths
-library(terra)                # GIS functions
-library(sf)                   # vector functions
-library(furrr)                
+## Set up -------------------------------------------------------------------
+## Install package 'pacman' if needed
+if (!require("pacman")) install.packages("pacman")
+
+## Load required packages
+pacman::p_load(       # automatically installs packages if needed
+  tidyverse,          # always
+  here,               # easier file paths
+  terra,              # GIS functions
+  sf,                 # vector functions
+  furrr)              # loads both future and purrr packages
 
 ## Read in ROI
 ssa_v <- vect(here("data/ROI/ssa_ne.shp"))
 
-# --------------- 1. Isolate LULC classes suitable for H4H ---------------------
+## Read in stream data and crop to ROI
+stream_v <- vect(here("data/USGS_HMDA/af_streams/AF_streams.shp")) %>% 
+  crop(., ssa_v)
 
-# This section reclassifies GLAD LULC data into a binary H4H availability layer,
-# aggregates and resamples to match the carbon data, masks out any additional
-# impervious surfaces, and then finally merges all tiles and masks them to the ROI
+## 1. Isolate LULC classes suitable for H4H ---------------------------------
+##
+## This section reclassifies GLAD LULC data into a binary H4H availability layer,
+## aggregates and resamples to match the carbon data, masks out any additional
+## impervious surfaces, and then finally merges all tiles and masks them to the ROI.
 
 
-## 1a. Reclassify GLAD & mask --------------------------
-## For each GLAD tile, reclassify to only keep land covers associated with H4H.
-## Then mask out impervious surfaces
+### 1A. Reclassify GLAD & mask ----------------------------------
+### For each GLAD tile, reclassify to only keep land covers associated with H4H.
+### Then mask out impervious surfaces and 
 
 ## Get file names and paths for each raster
 tiles_df <- data.frame(
@@ -50,6 +68,13 @@ imp_r <- rast(tiles_df$imp_surface[1])
 # glad_crs == crs(imp_r)
 # [1] TRUE
 
+## Match CRS and add buffer to streams
+stream_buffer <- stream_v %>% 
+  project(., y = glad_crs) %>% 
+  ## Generate 5km buffer (NOTE: do we want to change this??)
+  buffer(., width = 5000)
+
+
 ## binary reclassification matrix
 reclass_m <- matrix(c(
   -Inf, 1, 0,     # remove true desert
@@ -60,8 +85,6 @@ reclass_m <- matrix(c(
   100, 101, 0,    # remove salt pans
   102, 124, 1,    # keep short veg wetlands
   125, 127, 1,    # keep <5m trees wetlands
-  102, 124, 0,    # remove short veg wetlands
-  125, 127, 0,    # remove <5m trees wetlands
   128, 148, 0,    # remove tall tree wetlands
   200, 207, 0,    # remove open surface water
   241, 241, 0,    # remove snow/ice
@@ -70,24 +93,25 @@ reclass_m <- matrix(c(
 ), ncol = 3, byrow = TRUE)
 
 ## Create output folder
-dir_30m <- here("data/GLAD/tiles/reclassified/30m")
+dir_30m <- here("data/GLAD/tiles/reclassified/30m/river_buffer") #NOTE: testing buffer, change back to normal later
 if (!dir.exists(dir_30m)) dir.create(dir_30m)
 
 
-## Testing if for loop is faster
+## Using for loop here as it seems slightly faster
 for (i in 1:nrow(tiles_df)) {
   glad <- tiles_df$glad[i]
   imp_surface <- tiles_df$imp_surface[i]
   
-  print(paste0("Working on tile: ", basename(glad), " (", i, " out of ", nrow(tiles_df), ")"))
+  message("Reclassifying tile: ", basename(glad), " (", i, " out of ", nrow(tiles_df), ")")
   
   ## assign file name
   fname <- paste0(basename(tools::file_path_sans_ext(glad)),
                   "_rcl_binary_30m.tif")
   
   ## Only generate if tile not already processed
-  ## NOTE: this function can take several hours so may get interrupted
+  ## NOTE: this function can take several hours so it may get interrupted
   if (file.exists(file.path(dir_30m, fname))) {
+    message("File already exists.")
     next
   } else {
     ## read in LULC raster
@@ -101,8 +125,10 @@ for (i in 1:nrow(tiles_df)) {
       resample(., y = glad_rcl, method = "near")
     
     ## now mask out impervious surfaces
-    glad_mask <- mask(glad_rcl, imp_r, maskvalue = 1, updatevalue = 0)
-    
+    glad_mask <- mask(glad_rcl, imp_r, maskvalue = 1, updatevalue = 0) %>% 
+      ##TEST: ONLY KEEP AREAS W/IN 5KM OF WATER???
+      mask(., river_buffer)
+
     ## save
     writeRaster(glad_mask, 
                 file.path(dir_30m, fname),
@@ -111,51 +137,16 @@ for (i in 1:nrow(tiles_df)) {
   } 
 }
 
-# ## Function for reclassifying
-# reclass_30m_glad <- function(glad, imp_surface) {
-#   ## read in LULC raster
-#   glad_r <- rast(glad)
-#  
-#   ## assign file name
-#   fname <- paste0(basename(tools::file_path_sans_ext(glad)),
-#                   "_rcl_binary_30m.tif")
-#   
-#   ## only generate if tile not already processed
-#   ## (this function can take several hours and may get interrupted)
-#   if (!file.exists(file.path(dir_30m, fname))) {
-#     ## reclassify
-#     glad_rcl <- classify(glad_r, reclass_m, include.lowest = TRUE, right = NA)
-#     
-#     ## read in and resample impervious surface tile to match GLAD
-#     imp_r <- rast(imp_surface) %>% 
-#       resample(., y = glad_rcl, method = "near")
-#     
-#     ## now mask out impervious surfaces
-#     glad_mask <- mask(glad_rcl, imp_r, maskvalue = 1, updatevalue = 0)
-#     
-#     ## save
-#     writeRaster(glad_mask, 
-#                 file.path(dir_30m, fname),
-#                 datatype = "INT1U",
-#                 overwrite = TRUE) 
-#   } 
-# }
 
-## run fxn for all tiles
-# plan(multisession, workers = 8)
-# pmap(.x = tiles_df, .f = reclass_30m_glad, .progress = TRUE)
-# plan(sequential)
-
-
-
-## 1b. Aggregate --------------------------
-## For reclassified tiles, match naturebase resolution (~900m) and save
+### 1B. Aggregate ----------------------------------------------
+### For reclassified tiles, match naturebase resolution (~900 m) and save
+### as a lower resolution option.
 
 ## Output directory for 1km tiles
 dir_1km <- here("data/GLAD/tiles/reclassified/1km")
 if (!dir.exists(dir_1km)) dir.create(dir_1km)
 
-## Get list of reclassified 30m tiles (previous step)
+## Get list of reclassified 30m tiles (from previous step 1A)
 tiles_rcl_list <- list.files(dir_30m, pattern = "*.tif$", full.names = TRUE)
 
 ## Fxn to aggregate and resample to match NatureBase (~900m)
@@ -180,37 +171,42 @@ resample_1km_glad <- function(tile, fun) {
               overwrite = TRUE)
 }
 
-## run fxn 
+## run fxn over entire list
 map(.x = tiles_rcl_list, 
     .f = resample_1km_glad, 
     fun = "modal", # aggregation method (categorical)
     .progress = TRUE)
 
 
-## 1c. Merge and mask to SSA ------------------------
+### 1C. Merge and mask to SSA -----------------------------------
+### NOTE: for now, running both resolutions, but 30m takes a long time and is a huge file!
+res <- c("30m", "1km")
 
-## Get all tiles
-fnames <- list.files(dir_1km, pattern = "*.tif$", full.names = TRUE)
+for (i in 1:length(res)) {
+  dir_in <- paste0("dir_", res[i])
+  file_out <- paste0(here("data/GLAD/glad_2020_ssa_binary_"), res[i], ".tif")
+  
+  ## Get all tiles
+  fnames <- list.files(dir_in, pattern = "*.tif$", full.names = TRUE)
+  
+  ## stack them & merge
+  tiles_stack <- lapply(fnames, rast)
+  tiles_merged <- do.call(terra::merge, tiles_stack)
+  
+  ## Crop/mask and export
+  tiles_merged_ssa <- crop(tiles_merged, ssa_v, mask = TRUE)
+  
+  writeRaster(tiles_merged_ssa, file_out, overwrite = TRUE)
+}
 
-## stack them & merge
-tiles_stack <- lapply(fnames, rast)
-tiles_merged <- do.call(terra::merge, tiles_stack)
 
-## Crop/mask and export
-tiles_merged_ssa <- crop(tiles_merged, ssa_v, mask = TRUE)
-
-writeRaster(tiles_merged_ssa, 
-            here("data/GLAD/glad_2020_ssa_binary_1km.tif"),
-            overwrite = TRUE)
-
-
-# ---------------- 2. Remove steep terrains ------------------------
-# Here, we mask out any areas with a slope over 30% 
-# Data comes from USGS HMDA global dataset (Africa subset available)
-# Can download here: https://www.sciencebase.gov/catalog/item/591f6d17e4b0ac16dbdde1cd
+## 2. Remove steep terrains ------------------------------------------------
+## Here, we mask out any areas with a slope over 30% 
+## Data comes from USGS HMDA global dataset (Africa subset available)
+## Can download here: https://www.sciencebase.gov/catalog/item/591f6d17e4b0ac16dbdde1cd
 
 ## Pathway to data
-slope_fpath <- here("data/USGS_HMDA")
+slope_fpath <- here("data/USGS_HMDA/slope")
 
 ## List files
 slope_fnames = list.files(file.path(slope_fpath, "raw"),
@@ -261,9 +257,7 @@ writeRaster(avail_mask,
 
 
 
-# ---------------- 3. Relative suitability from carbon ------------------------
-
-
+## 3. Relative suitability from carbon ------------------------
 
 
 ## order of operations
