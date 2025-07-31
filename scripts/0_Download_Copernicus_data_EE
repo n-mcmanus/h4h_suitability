@@ -1,25 +1,39 @@
 // If you want a different year, change it at the end of the line below (dataset is 2015-2019)
 var dataset = ee.Image('COPERNICUS/Landcover/100m/Proba-V-C3/Global/2019')
 
+// ROI generated in '0_prep_data.R' uploaded as asset to crop in GEE
+var roi = ee.FeatureCollection("projects/ee-nmcmanus/assets/ssa_ne")
+
 // obtain dsicrete classifiction and cover fractions of interest. Clipped to a quickly drawn polygon that encompasses all of SSA
-var lc2019 = dataset.select('discrete_classification').clip(geometry);
-var bare = dataset.select('bare-coverfraction').clip(geometry);
-var trees = dataset.select('tree-coverfraction').clip(geometry);
+var lc2019 = dataset.select('discrete_classification').clip(roi);
+var bare = dataset.select('bare-coverfraction').clip(roi);
+var trees = dataset.select('tree-coverfraction').clip(roi);
 // other cover fracitons are available in different bands. The full list can be found here https://developers.google.com/earth-engine/datasets/catalog/COPERNICUS_Landcover_100m_Proba-V-C3_Global#bands
 
 Map.addLayer(lc2019, {}, 'Land Cover');
 Map.addLayer(bare, {}, 'Bare_pct');
 Map.addLayer(trees, {}, 'Trees_pct');
 
-//copy out or edit this to download bare and tree fractional data or other layers of interest.
-Export.image.toDrive({
-  image: lc2019,
-  scale: 100,
-  description: 'Copernicus_Discrete_2019',
-  maxPixels:10000000000000,
-  fileFormat: 'GeoTIFF',
-  formatOptions: {
-    cloudOptimized: true,
-     noData: ""
-  }
+// create list of all the layers
+var layers = [
+  {image: lc2019, name: 'Copernicus_Discrete_2019'},
+  {image: bare, name: 'Copernicus_Bare_2019'},
+  {image: trees, name: 'Copernicus_Trees_2019'}
+];
+
+// export each
+layers.forEach(function(layer) {
+  Export.image.toDrive({
+    image: layer.image,
+    description: layer.name,
+    folder: 'GEE_Exports',
+    fileNamePrefix: layer.name,
+    region: roi.geometry(),
+    scale: 100,
+    maxPixels: 1e13,
+    fileFormat: 'GeoTIFF',
+    formatOptions: {
+      cloudOptimized: true
+    }
+  });
 });
