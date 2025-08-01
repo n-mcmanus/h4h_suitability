@@ -58,4 +58,4 @@ reclass_aligned <- resample(lc_2019_mask_reclass, lc_2019, method="near")
 updated_raster <- cover(reclass_aligned, lc_2019)
 plot(updated_raster)  # to check reclassification has worked
 
-terra::writeRaster(updated_raster, filename=file.path(dir_out, "Copernicus_fix/LC_2019_Copernicus_fixed_r.tif"), overwrite = TRUE)
+terra::writeRaster(updated_raster, filename=file.path(dir_out, "Copernicus_fix/copernicus_discrete_LC_SSA_2019_fixed_r.tif"), overwrite = TRUE)
