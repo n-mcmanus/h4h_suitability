@@ -3,13 +3,14 @@
 ## Purpose: This script wrangles and prepares the data used for other scripts
 ## in this analysis. This includes downloading, reclassifying, resampling, and more.
 ##
-## Last updated: 02 June 2025
+## Last updated: 24 July 2025
 ##
 ## Author: Nick McManus
 ## Email: nmcmanus@conservation.org
 ##
-## Notes: Subject to updates as more datasets are incorporated and suitability
-## analysis is further developed.
+## Notes: Switching out GLAD for Copernicus LULC, reflected in commented out code below.
+## Some processing steps of Copernicus done in ArcGIS Pro, still needs to be 
+## translated to code when possible. 
 
 ## Set up ------------------------------------------------------------------
 ## Install package 'pacman' if needed
@@ -18,13 +19,17 @@ if (!require("pacman")) install.packages("pacman")
 ## Load required packages
 pacman::p_load(       # automatically installs packages if needed
   tidyverse,          # always
-  here,               # easier file paths
   terra,              # GIS functions
   sf,                 # vector functions
   rnaturalearth,      # get country outlines
   rnaturalearthdata,  # " "
   httr,               # Helps download GLAD data via GEE URL
   furrr)              # loads both future and purrr packages
+
+## Set working directories (in SharePoint)
+## **NOTE:** change this first one to match local SharePoint shortcut
+h4h_shortcut <- "C:/Users/nmcmanus/OneDrive - Conservation International Foundation/Documents/Projects/SPARCLE"
+data <- file.path(h4h_shortcut, "SPARCLER-CC - H4H/Data") #this should automatically work if properly synced
 
 
 ## ROI --------------------------------------------------------------------
@@ -41,7 +46,7 @@ africa_sf <- ne_countries(scale = "medium", returnclass = "sf") %>%
   ## filter out small and/or island territories for this analysis
   mutate(area_km2 = as.numeric(st_area(.) / 1e6)) %>%
   filter(area_km2 > 5000,
-         admin != "Madagascar", #remove for now. maybe include later
+         # admin != "Madagascar", #keep for now. maybe include later
          type != "Dependency")
 
 ## Get only SSA countries
@@ -49,10 +54,11 @@ ssa_sf <- africa_sf %>%
   filter(region_wb == "Sub-Saharan Africa") 
 
 ## Save for later use
-dir_out <- here("data/ROI")
+dir_out <- file.path(data, "ROI")
 if (!dir.exists(dir_out)) dir.create(dir_out) #creates directory locally if it doesn't exist
 
 write_sf(ssa_sf, file.path(dir_out, "ssa_ne.shp"))
+write_sf(africa_sf, file.path(dir_out, "africa_ne.shp")) #Save continent in case useful later
 
 
 ## NatureBase --------------------------------------------------------------
@@ -70,14 +76,14 @@ layers <- c(
 )
 
 ## Assign directories
-dir_in <- here("data/naturebase/all_pathways") #where data is saved locally
-dir_out <- here("data/naturebase/africa")      #desired output directory
+dir_in <- file.path(data, "carbon/naturebase/all_pathways") #where data is saved locally
+dir_out <- file.path(data, "carbon/naturebase/africa")      #desired output directory
 if (!dir.exists(dir_out)) dir.create(dir_out)
 
 
 ## Loop through each global raster, crop & mask to ROI, then export
 for (lyr in layers) {
-  print(paste("Working on:", lyr))
+  message("Working on: ", lyr)
   
   ## get file name
   fname <- paste0(lyr, "_tco2eha.tif")
@@ -101,51 +107,82 @@ for (lyr in layers) {
 }
 
 
-## GLAD --------------------------------------------------------------------
-## This section downloads all the tiles of LULC data intersecting our ROI,
-## then merges them together and masks to ROI.
-## Direct download available via: https://storage.googleapis.com/earthenginepartners-hansen/GLCLU2000-2020/v2/download.html
+## Copernicus --------------------------------------------------------------
+## Data can be downloaded from Google Earth Engine using code in script '0_Download_Copernicus_data_EE.R' 
+## Or directly downloaded (with free account) from ESA here: https://land.copernicus.eu/en/products/global-dynamic-land-cover/copernicus-global-land-service-land-cover-100m-collection-3-epoch-2019-globe#download 
 
-## Create output directory
-dir_out <- here("data/GLAD/tiles/raw")
-if (!dir.exists(dir_out)) dir.create(dir_out)
+## Get directory w/data
+cop_dir <- file.path(data, "Land_Cover/Copernicus_nick")
 
-## All possible lats/longs for SSA tiles
-latitudes <- seq(-30, 30, by = 10)
-longitudes <- seq(-20, 40, by = 10)  
+## Quick fxn to merge and crop/mask Copernicus tiles
+cop_prep <- function(files) {
+  ## first read in all rasters as a stack
+  stack <- lapply(files, rast)
+  
+  ## then merge
+  merge <- do.call(terra::merge, stack)
+  
+  ## now crop & mask to ROI
+  ssa_v <- ssa_sf %>% 
+    vect() %>% 
+    project(., crs(merge))
+  
+  cropped <- crop(merge, ssa_v, mask = TRUE)
+  
+  return(cropped)
+}
 
-## Generate the combinations of latitude and longitude
-coords <- expand.grid(lat = latitudes, lon = longitudes)
 
-## Format the lon/lat to match file naming convention
-coords_formatted <- coords %>%
-  mutate(
-    lon = case_when(lon < 0 ~ sprintf("%03dW", abs(lon)), # format neg lons with W
-                    .default = sprintf("%03dE", lon)),    # format positive lons with E
-    lat = case_when(lat < 0 ~ sprintf("%02dS", abs(lat)),
-                    .default = sprintf("%02dN", lat))
-  )
-
-## Create list of all possible file names for SSA
-ssa_coords <- paste0(
-  "https://storage.googleapis.com/earthenginepartners-hansen/GLCLU2000-2020/v2/2020/",
-  coords_formatted$lat,
-  "_",
-  coords_formatted$lon,
-  ".tif"
+### Discrete LULC ------------------------
+## Get list of tiles
+dis_files <- list.files(
+  path = file.path(cop_dir, "discrete/tiles"),
+  pattern = "*.tif$",
+  full.names = TRUE
 )
 
-## Get list of all the 2020 GLAD tiles worldwide
-url_2020 <- "https://storage.googleapis.com/earthenginepartners-hansen/GLCLU2000-2020/v2/2020.txt"
-all_2020_tiles <- readLines(url_2020)
+## Run fxn
+dis_r <- cop_prep(dis_files)
 
-## Only return tiles in SSA
-ssa_tiles <- intersect(all_2020_tiles, ssa_coords)
+#########
+# NOTE: ADD CODE HERE FOR "FIXING" 2019 BUILT-UP AREA, THEN RE-SAVE
+#########
 
-## Download all raster tiles
-purrr::map(ssa_tiles, function(url) {
-  GET(url, write_disk(file.path(dir_out, basename(url)), overwrite = TRUE))
-})
+## Export
+writeRaster(dis_r, 
+            file.path(cop_dir, "discrete", "copernicus_discrete_LC_SSA_2019.tif"),
+            overwrite = TRUE)
+
+
+### Bare Ground --------------------------
+## Get list of tiles
+bare_files <- list.files(
+  path = file.path(cop_dir, "fractional_coverage/bare/tiles"),
+  pattern = "*.tif$",
+  full.names = TRUE
+)
+
+## Run fxn
+bare_r <- cop_prep(bare_files)
+
+## Export
+writeRaster(bare_r, 
+            file.path(cop_dir, "fractional_coverage/bare", "copernicus_bare_fraction_SSA_2019.tif"),
+            overwrite = TRUE)
+
+### Tree Cover ---------------------------
+tree_files <- list.files(
+  path = file.path(cop_dir, "fractional_coverage/trees/tiles"),
+  pattern = "*.tif$",
+  full.names = TRUE
+)
+
+tree_r <- cop_prep(tree_files)
+
+## Export
+writeRaster(tree_r, 
+            file.path(cop_dir, "fractional_coverage/trees", "copernicus_tree_fraction_SSA_2019.tif"),
+            overwrite = TRUE)
 
 
 ## Impervious Surfaces --------------------------------------------------------
@@ -154,7 +191,7 @@ purrr::map(ssa_tiles, function(url) {
 ## Data can be directly downloaded here: https://zenodo.org/records/3505079
 
 ## Set filepath for locally saved impervious surface data
-fpath <- here("data/Global Impervious Surfaces products")
+fpath <- file.path(data, "Land_Cover/Global Impervious Surfaces products")
 
 ## Set output directory
 dir_out <- file.path(fpath, "reclassified")
@@ -221,3 +258,98 @@ purrr::pmap(imp_tiles_df, .progress = TRUE, function(fpath, lat_lon_glad) {
 ## return to sequential processing
 plan(sequential) 
 
+
+## Gridded Livestock of the World (GLW)  ------------------------------------
+## Download global dataset to compare the estimated livestock density against availability based on LULC.
+## Can download/access metadata here: https://data.apps.fao.org/catalog/dataset/9d1e149b-d63f-4213-978b-317a8eb42d02
+
+base_url <- "https://storage.googleapis.com/fao-gismgr-glw4-2020-data/DATA/GLW4-2020/MAPSET/D-DA/GLW4-2020.D-DA."
+
+livestock <- c(
+  "BFL", #buffalo
+  # "CHK", #chicken (omitting for now; not grazers)
+  "CTL", #cattle
+  "GTS", #goats
+  # "PGS", #pigs (omitting for now; not grazers)
+  "SHP" #sheep
+)
+
+## Where to save outputs
+dir_out <- file.path(data, "livestock_grazing/GLWv4")
+if (!dir.exists(dir_out)) dir.create(dir_out)
+
+## Download all files
+for (animal in livestock) {
+  url <- paste0(base_url, animal, ".tif")
+  GET(url, write_disk(file.path(dir_out, basename(url)), overwrite = TRUE))
+}
+
+## Get list of files
+glw_files <- list.files(dir_out, pattern = "*.tif$", full.names = TRUE)
+
+## read in ROI (if needed) and match CRS
+ssa_v <- vect(file.path(data, "ROI/ssa_ne.shp")) %>% 
+  project(., crs(rast(glw_files[1])))
+
+## For each file, crop and mask to ROI then export
+for (file in glw_files) {
+  ## crop and mask to ROI
+  r <- rast(file) %>% 
+    crop(., ssa_v, mask = TRUE)
+  ## remove areas with no livestock/km2
+  r[r == 0] <- NA
+  
+  ## save outputs
+  filename <- basename(file) %>% 
+    gsub(".tif", "_ssa.tif", .)
+  
+  writeRaster(r, file.path(dir_out, filename), overwrite = TRUE)
+}
+
+
+
+# ## GLAD --------------------------------------------------------------------
+# ## This section downloads all the tiles of LULC data intersecting our ROI,
+# ## then merges them together and masks to ROI.
+# ## Direct download available via: https://storage.googleapis.com/earthenginepartners-hansen/GLCLU2000-2020/v2/download.html
+# 
+# ## Create output directory
+# dir_out <- here("data/GLAD/tiles/raw")
+# if (!dir.exists(dir_out)) dir.create(dir_out)
+# 
+# ## All possible lats/longs for SSA tiles
+# latitudes <- seq(-30, 30, by = 10)
+# longitudes <- seq(-20, 40, by = 10)  
+# 
+# ## Generate the combinations of latitude and longitude
+# coords <- expand.grid(lat = latitudes, lon = longitudes)
+# 
+# ## Format the lon/lat to match file naming convention
+# coords_formatted <- coords %>%
+#   mutate(
+#     lon = case_when(lon < 0 ~ sprintf("%03dW", abs(lon)), # format neg lons with W
+#                     .default = sprintf("%03dE", lon)),    # format positive lons with E
+#     lat = case_when(lat < 0 ~ sprintf("%02dS", abs(lat)),
+#                     .default = sprintf("%02dN", lat))
+#   )
+# 
+# ## Create list of all possible file names for SSA
+# ssa_coords <- paste0(
+#   "https://storage.googleapis.com/earthenginepartners-hansen/GLCLU2000-2020/v2/2020/",
+#   coords_formatted$lat,
+#   "_",
+#   coords_formatted$lon,
+#   ".tif"
+# )
+# 
+# ## Get list of all the 2020 GLAD tiles worldwide
+# url_2020 <- "https://storage.googleapis.com/earthenginepartners-hansen/GLCLU2000-2020/v2/2020.txt"
+# all_2020_tiles <- readLines(url_2020)
+# 
+# ## Only return tiles in SSA
+# ssa_tiles <- intersect(all_2020_tiles, ssa_coords)
+# 
+# ## Download all raster tiles
+# purrr::map(ssa_tiles, function(url) {
+#   GET(url, write_disk(file.path(dir_out, basename(url)), overwrite = TRUE))
+# })
