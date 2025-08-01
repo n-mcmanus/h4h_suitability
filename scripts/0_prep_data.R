@@ -133,27 +133,6 @@ cop_prep <- function(files) {
 }
 
 
-### Discrete LULC ------------------------
-## Get list of tiles
-dis_files <- list.files(
-  path = file.path(cop_dir, "discrete/tiles"),
-  pattern = "*.tif$",
-  full.names = TRUE
-)
-
-## Run fxn
-dis_r <- cop_prep(dis_files)
-
-#########
-# NOTE: ADD CODE HERE FOR "FIXING" 2019 BUILT-UP AREA, THEN RE-SAVE
-#########
-
-## Export
-writeRaster(dis_r, 
-            file.path(cop_dir, "discrete", "copernicus_discrete_LC_SSA_2019.tif"),
-            overwrite = TRUE)
-
-
 ### Bare Ground --------------------------
 ## Get list of tiles
 bare_files <- list.files(
@@ -183,6 +162,45 @@ tree_r <- cop_prep(tree_files)
 writeRaster(tree_r, 
             file.path(cop_dir, "fractional_coverage/trees", "copernicus_tree_fraction_SSA_2019.tif"),
             overwrite = TRUE)
+
+
+### Discrete LULC ------------------------
+## Get list of tiles
+dis_files <- list.files(
+  path = file.path(cop_dir, "discrete/tiles"),
+  pattern = "*.tif$",
+  full.names = TRUE
+)
+
+## Run fxn
+lc_2019 <- cop_prep(dis_files)
+
+## Incorrect data artifact in 2019 layer showing swatch of built-up in natural areas.
+## Correcting this with manually created bounding box and 2016 Copernicus LULC data
+lc_2016 <- rast(file.path(cop_dir, "discrete/Copernicus_Discrete_2016.tif"))
+fix_region <- vect(file.path(cop_dir, "discrete/Region_to_fix/built_up_fix_region_2019.shp"))
+
+## Crop both layers to problem area
+lc_2019_crop <- crop(lc_2019, fix_region, mask = TRUE)
+lc_2016_crop <- crop(lc_2016, fix_region, mask = TRUE)
+
+
+## Reclassify built-up areas in the fix region (value 50) in 2019 
+## to assume the value from the 2016 LC.
+lc_2019_reclass <- ifel(lc_2019_crop == 50, lc_2016_crop, lc_2019_crop) %>% 
+  ## Align the reclassified layer with the full 2019 LC extent
+  ## This assigns NA values to areas outside of the fixed region
+  resample(., dis_r, method = "near")
+
+## Mosaic the fixed values from the update region back on to the full 2019 layer.  
+## Only covers reclassified values in fixed zone (NAs ignored).
+lc_2019_fixed <- cover(lc_2019_reclass, dis_r)
+
+## Export
+writeRaster(lc_2019_fixed, 
+            file.path(cop_dir, "discrete", "copernicus_discrete_LC_SSA_2019_fixed.tif"),
+            overwrite = TRUE)
+
 
 
 ## Impervious Surfaces --------------------------------------------------------
@@ -292,7 +310,9 @@ ssa_v <- vect(file.path(data, "ROI/ssa_ne.shp")) %>%
   project(., crs(rast(glw_files[1])))
 
 ## For each file, crop and mask to ROI then export
-for (file in glw_files) {
+for (i in 1:length(glw_files)) {
+  file <- glw_files[i]
+  
   ## crop and mask to ROI
   r <- rast(file) %>% 
     crop(., ssa_v, mask = TRUE)
