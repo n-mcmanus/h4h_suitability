@@ -1,24 +1,25 @@
-// If you want a different year, change it at the end of the line below (dataset is 2015-2019)
-var dataset = ee.Image('COPERNICUS/Landcover/100m/Proba-V-C3/Global/2019')
+// Select the year of interest (dataset is 2015-2019)
+var year = 2019 //Default for this analysis
+var dataset = ee.Image('COPERNICUS/Landcover/100m/Proba-V-C3/Global/' + year)
 
 // ROI generated in '0_prep_data.R' uploaded as asset to crop in GEE
 var roi = ee.FeatureCollection("projects/ee-nmcmanus/assets/ssa_ne")
 
 // obtain dsicrete classifiction and cover fractions of interest. Clipped to a quickly drawn polygon that encompasses all of SSA
-var lc2019 = dataset.select('discrete_classification').clip(roi);
+var lulc = dataset.select('discrete_classification').clip(roi);
 var bare = dataset.select('bare-coverfraction').clip(roi);
 var trees = dataset.select('tree-coverfraction').clip(roi);
 // other cover fracitons are available in different bands. The full list can be found here https://developers.google.com/earth-engine/datasets/catalog/COPERNICUS_Landcover_100m_Proba-V-C3_Global#bands
 
-Map.addLayer(lc2019, {}, 'Land Cover');
+Map.addLayer(lulc, {}, 'Land Cover');
 Map.addLayer(bare, {}, 'Bare_pct');
 Map.addLayer(trees, {}, 'Trees_pct');
 
 // create list of all the layers
 var layers = [
-  {image: lc2019, name: 'Copernicus_Discrete_2019'},
-  {image: bare, name: 'Copernicus_Bare_2019'},
-  {image: trees, name: 'Copernicus_Trees_2019'}
+  {image: lulc, name: 'Copernicus_Discrete_' + year},
+  {image: bare, name: 'Copernicus_Bare_' + year},
+  {image: trees, name: 'Copernicus_Trees_' + year}
 ];
 
 // export each
