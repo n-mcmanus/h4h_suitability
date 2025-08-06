@@ -79,10 +79,9 @@ writeRaster(discrete_rcl_r,
             overwrite = TRUE)
 
 
-### 1B. Reclassify Fractional Coverages -------------------
-## Now evaluate Copernicus fractional tree and bare ground cover to get more precise thresholds
+### 1B. Reclassify Fractional Tree Coverage -------------------
+## Now evaluate Copernicus fractional tree and cover to get more precise thresholds
 tree_r <- rast(file.path(cop_dir, 'fractional_coverage/trees', 'copernicus_tree_fraction_SSA_2019.tif'))
-bare_r <- rast(file.path(cop_dir, 'fractional_coverage/bare', 'copernicus_bare_fraction_SSA_2019.tif'))
 
 ## Reclassify to only consider areas with <80% tree canopy
 rcl_tree_m <- matrix(c(
@@ -99,26 +98,11 @@ writeRaster(tree_rcl_r,
             overwrite = TRUE)
 
 
-## Reclassify to isolate areas with 100% bare ground
-bare_rcl_m <- matrix(c(
-  0, 99, 1,
-  100, Inf, 0
-), ncol = 3, byrow = TRUE)
+### 1C. Isolate non-herding bare areas ---------------------
+### Finally, remove areas that are considered "bare" in Copernicus & 
+### not within Ramona rangeland extent
 
-bare_rcl_r <- classify(bare_r, bare_rcl_m, right = NA)
-
-## save intermediate
-writeRaster(bare_rcl_r,
-            file.path(cop_dir, "fractional_coverage/bare", "copernicus_bare_binary_SSA_2019.tif"),
-            datatype = "INT1U",
-            overwrite = TRUE)
-
-
-## Want to only mask out areas that are both 100% bare in Copernicus
-## and not part of rangeland extent in Ramona (Luke: let's see how this looks, 
-## if it is including too many true desert type areas as rangeland then I would rather use a lower bare ground threshold (e.g. 80%)
-## or instead use the Coperncius bare dicrete class in combination with non-rangeland as per Ramona. The 100% bare ground
-## thinking was more from before the Ramona came up as another mask layer to explore)
+## Read in Ramona data
 range_ext_r <- rast(file.path(data, 'livestock_grazing/Ramona_Data/rangeland_max_extent_LT_NDVI_smoothed_3_AFRICA.tiff'))
 
 ## crop and mask to ROI
@@ -126,15 +110,15 @@ ssa_reproj <- project(ssa_v, range_ext_r)
 range_ext_crop <- crop(range_ext_r, ssa_reproj, mask = TRUE)
 
 ## Reproject/disaggregate/resample ramona data to match
-range_ext_reproj <- project(range_ext_crop, crs(bare_rcl_r), method = "near")
+range_ext_reproj <- project(range_ext_crop, crs(discrete_r), method = "near")
 
-factor <- floor(res(range_ext_reproj)[1] / res(bare_rcl_r)[1])
+factor <- floor(res(range_ext_reproj)[1] / res(discrete_r)[1])
 
 range_ext_resamp <- disagg(range_ext_reproj, factor, "near") %>% 
-  resample(., bare_rcl_r, "near")
+  resample(., discrete_r, "near")
 
 ## Isolate areas totally bare AND outside grazing extent
-bare_mask <- as.numeric((range_ext_resamp == 0) & (bare_rcl_r == 0))
+bare_mask <- as.numeric((range_ext_resamp == 0) & (discrete_r == 60))
 
 lulc_avail <- 
   ## Mask out bare areas
@@ -150,6 +134,7 @@ writeRaster(lulc_avail,
 
 ## Clear up memory a bit
 gc();
+
 
 ## 2. Remove steep terrains ------------------------------------------------
 ## Here, we mask out any areas with a slope over 30% 
@@ -173,11 +158,10 @@ writeRaster(slope_merged,
             file.path(slope_dir, "af_slope_merged_90m.tif"),
             overwrite = TRUE)
 
-
 ## Match CRS and resolution of LULC data
 # lulc_avail <- rast(file.path(cop_dir, "copernicus_SSA_availability.tif")) #read in if needed
 
-slope_rcl <- 
+slope_rcl <-
   ## First reduce area by cropping to only SSA
   crop(slope_merged, ssa_v, mask = TRUE) %>%
   ## Then match CRS and extent of Copernicus layer
@@ -207,12 +191,41 @@ writeRaster(avail_mask,
 
 
 
-## 3. Remove additional built-up/impervious areas --------------------------
+## 3. Remove forest plantations --------------------------------------------
+## H4H activities unlikely to occur in commercial forest plantations.
+## Dataset comes from the Spatial Database of Planted Trees (SDPT v2.0).
+## Country-by-country polygons can be downloaded from GFW: https://www.wri.org/research/spatial-database-planted-trees-sdpt-version-2
+## We've emailed the authors for these as raster tiles to use.
 
 
 
 
-## 4. Carbon benefits in available areas ----------------------------------
+
+## 4. Remove additional built-up/impervious areas --------------------------
+
+## Most recent LULC avail if needed
+avail_r <- rast(file.path(out_dir, "availability_ssa_slope_100m.tif"))
+
+## Read in ROI if needed
+ssa_v <- vect(file.path(data, "ROI/ssa_ne.shp")) %>% 
+  project(., avail_r)
+
+## Remove mining areas from Maus et al., 2022 polygons
+## First read in and crop to only ROI
+mines_v <- vect(file.path(data, "Land_Cover/Maus_2022_mining", "global_mining_polygons_v2.gpkg")) %>% 
+  project(., ssa_v) %>% 
+  crop(., ssa_v)
+
+## Now mask availability layer with mines
+avail_no_mines <- mask(avail_r, mines_v, 
+                       inverse = TRUE, 
+                       touches = TRUE, 
+                       updatevalue = 0)
+
+writeRaster(avail_no_mines, file.path(out_dir, "mines.tif"), datatype = "INT1U")
+
+
+## 5. Carbon benefits in available areas ----------------------------------
 ## order of operations
 layers <- c(
   "grs_agc",  #avoided grassland conversion
