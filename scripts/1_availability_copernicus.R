@@ -115,7 +115,10 @@ writeRaster(bare_rcl_r,
 
 
 ## Want to only mask out areas that are both 100% bare in Copernicus
-## and not part of rangeland extent in Ramona
+## and not part of rangeland extent in Ramona (Luke: let's see how this looks, 
+## if it is including too many true desert type areas as rangeland then I would rather use a lower bare ground threshold (e.g. 80%)
+## or instead use the Coperncius bare dicrete class in combination with non-rangeland as per Ramona. The 100% bare ground
+## thinking was more from before the Ramona came up as another mask layer to explore)
 range_ext_r <- rast(file.path(data, 'livestock_grazing/Ramona_Data/rangeland_max_extent_LT_NDVI_smoothed_3_AFRICA.tiff'))
 
 ## crop and mask to ROI
