@@ -1,25 +1,32 @@
-// Select the year of interest (dataset is 2015-2019)
+//This script downloads the required lulc data from Copernicus and SBTN datasets from GEE. 
+
+// Select the year of interest for Copernicus (dataset is 2015-2019)
 var year = 2019 //Default for this analysis
-var dataset = ee.Image('COPERNICUS/Landcover/100m/Proba-V-C3/Global/' + year)
+var copernicus = ee.Image('COPERNICUS/Landcover/100m/Proba-V-C3/Global/' + year)
+// Also read in SBTN (most recent 2020 version)
+var sbtn_data = ee.Image("WRI/SBTN/naturalLands/v1_1/2020")
 
 // ROI generated in '0_prep_data.R' uploaded as asset to crop in GEE
 var roi = ee.FeatureCollection("projects/ee-nmcmanus/assets/ssa_ne")
 
 // obtain dsicrete classifiction and cover fractions of interest. Clipped to a quickly drawn polygon that encompasses all of SSA
-var lulc = dataset.select('discrete_classification').clip(roi);
-var bare = dataset.select('bare-coverfraction').clip(roi);
-var trees = dataset.select('tree-coverfraction').clip(roi);
+var lulc = copernicus.select('discrete_classification').clip(roi);
+var bare = copernicus.select('bare-coverfraction').clip(roi);
+var trees = copernicus.select('tree-coverfraction').clip(roi);
+var sbtn = sbtn_data.select('classification').clip(roi)
 // other cover fracitons are available in different bands. The full list can be found here https://developers.google.com/earth-engine/datasets/catalog/COPERNICUS_Landcover_100m_Proba-V-C3_Global#bands
 
 Map.addLayer(lulc, {}, 'Land Cover');
 Map.addLayer(bare, {}, 'Bare_pct');
 Map.addLayer(trees, {}, 'Trees_pct');
+Map.addLayer(sbtn, {}, 'SBTN');
 
 // create list of all the layers
 var layers = [
   {image: lulc, name: 'Copernicus_Discrete_' + year},
   {image: bare, name: 'Copernicus_Bare_' + year},
-  {image: trees, name: 'Copernicus_Trees_' + year}
+  {image: trees, name: 'Copernicus_Trees_' + year},
+  {image: sbtn, name: 'SBTN_2020'}
 ];
 
 // export each
