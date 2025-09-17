@@ -36,7 +36,7 @@ ssa_v <- vect(file.path(data, "ROI/ssa_ne.shp"))
 ## We will use several different layers of Copernicus data for this
 
 ## Directory for the Copernicus datasets
-cop_dir <- file.path(data, "Land_Cover/Copernicus_nick")
+cop_dir <- file.path(data, "Land_Cover/Copernicus")
 
 ### 1A. Reclassify Discrete LULC data -----------------------
 ## Read in
@@ -185,48 +185,58 @@ avail_mask <- mask(lulc_avail, slope_rcl, updatevalue = 0) %>%
 
 ## Save output
 writeRaster(avail_mask, 
-            file.path(out_dir, "availability_ssa_slope_100m.tif"),
+            file.path(slope_dir, "availability_ssa_slope_100m.tif"),
             datatype = "INT1U",
             overwrite = TRUE)
 
 
 
-## 3. Remove forest plantations --------------------------------------------
-## H4H activities unlikely to occur in commercial forest plantations.
-## Dataset comes from the Spatial Database of Planted Trees (SDPT v2.0).
-## Country-by-country polygons can be downloaded from GFW: https://www.wri.org/research/spatial-database-planted-trees-sdpt-version-2
-## We've emailed the authors for these as raster tiles to use.
+## 3. Remove additional built-up & impervious areas --------------------------
 
-
-
-
-
-## 4. Remove additional built-up/impervious areas --------------------------
-
-## Most recent LULC avail if needed
-avail_r <- rast(file.path(out_dir, "availability_ssa_slope_100m.tif"))
+## Read in most recent LULC avail if needed
+avail_r <- rast(file.path(slope_dir, "availability_ssa_slope_100m.tif"))
 
 ## Read in ROI if needed
 ssa_v <- vect(file.path(data, "ROI/ssa_ne.shp")) %>% 
   project(., avail_r)
 
-## Remove mining areas from Maus et al., 2022 polygons
-## First read in and crop to only ROI
+
+## We'll remove mining areas from the Maus et al., 2022 polygons
+## Read in and crop to only ROI
 mines_v <- vect(file.path(data, "Land_Cover/Maus_2022_mining", "global_mining_polygons_v2.gpkg")) %>% 
   project(., ssa_v) %>% 
   crop(., ssa_v)
 
-## Now mask availability layer with mines
-avail_no_mines <- mask(avail_r, mines_v, 
-                       inverse = TRUE, 
-                       touches = TRUE, 
-                       updatevalue = 0)
+### We also want to remove built-up areas from SBTN data layer. These data capture more
+### urban and built-up environments than Copernicus LULC alone.
+sbtn_r <- rast(file.path(data, "Land_Cover/SBTN/SBTN_SSA_edited.tif")) %>% 
+  ## match projection and then resolution of avail_r 
+  project(., y = crs(avail_r)) %>% 
+  aggregate(., fact = 3, fun = "modal") %>% #SBTN at ~30m; avail lyr is 100m
+  resample(., avail_r, method = "mode")
 
-writeRaster(avail_no_mines, file.path(out_dir, "mines.tif"), datatype = "INT1U")
+
+## Now mask availability layer with mines & SBTN
+avail_no_built <-
+  mask(avail_r, mines_v, inverse = TRUE, touches = TRUE, updatevalue = 0) %>%
+  mask(., sbtn_r, maskvalues = 13, updatevalue = 0)
+
+
+## Export availability layer
+writeRaster(avail_no_built,
+            file.path(out_dir, "availability_ssa_100m.tif"),
+            datatype = "INT1U",
+            overwrite = TRUE)
+
+
 
 
 ## 5. Carbon benefits in available areas ----------------------------------
-## order of operations
+
+### 5A. Naturebase ------------------------------
+### According to priority order of Naturebase's logic rules, need to mask and
+### add relevant layers in proper order
+
 layers <- c(
   "grs_agc",  #avoided grassland conversion
   "grs_asc",  #avoided shrubland conversions
@@ -236,72 +246,99 @@ layers <- c(
   "grs_grr"  #grassland restoration
 )
 
-fpath <- here("data/naturebase/africa")
-r_ssa[r_ssa == 0] <- NA ## ADD THIS IN BELOW SOMEWHERE
+## directory of prepped naturebase layers
+nb_dir <- file.path(data, "carbon/naturebase/africa")
 
+## loop through each layer
 for (i in seq_along(layers)) {
   layer <- layers[i]
   
-  r <- rast(file.path(fpath, paste0(layer, "_tco2eha_ssa_na.tif")))
+  ## read in layer and make 0 values NA for easier masking
+  r <- rast(file.path(nb_dir, paste0(layer, "_tco2eha_ssa.tif")))
+  r[r==0] <- NA
   
   if (i == 1) {
-    r_total <- r
+    carbon_total <- r
   } else {
-    r_mask <- mask(r, r_total, inverse = TRUE)
-    r_total <- sum(r_total, r_mask, na.rm = TRUE)
+    r_mask <- mask(r, carbon_total, inverse = TRUE)
+    carbon_total <- sum(carbon_total, r_mask, na.rm = TRUE)
   }
 }
 
 
-## Find carbon benefits for availability layer
-carbon_benefits <- function(res, carbon_r) {
-  ## read in raster
-  avail_r <- rast(here(sprintf("data/outputs/availability_ssa_%s.tif", res)))
-  
-  ## remove values of 0
-  avail_r[avail_r == 0] <- NA
-  
-  ## mask carbon data to available areas
-  carbon_masked <- mask(carbon_r, avail_r)
-  
-  writeRaster(carbon_masked,
-              here(sprintf("data/outputs/availability_ssa_carbon_%s.tif", res)),
-              overwrite = TRUE)
-}
+## Read in availability layer (if needed)
+avail_r <- rast(file.path(out_dir, "availability_ssa_100m.tif"))
+avail_r[avail_r == 0] <- NA # remove values of 0
 
-## Run fxn
-carbon_benefits(res = "1km", carbon_r = r_total)
+## mask carbon data to available areas
+carbon_masked <- mask(carbon_total, avail_r, maskvalue = 0, updatevalue = NA)
 
-
-
-
-
-
-
-
-## Read in binary availability layer (generated in previous section)
-avail_r <- rast(here("data/outputs/availability_ssa_"))
-glad_r <- rast(here("data/outputs/glad_no_imp_slope30_2020_ssa_binary_1km.tif"))
-glad_r[glad_r == 0] <- NA
-
-carbon_masked <- mask(r_total, glad_r)
-
-glad_r[glad_r == 1] <- 0
-test <- cover(carbon_masked, glad_r)
-
-writeRaster(test,
-            here("data/h4h_availability_slope_imp_carbon_1km.tif"),
+## save output
+writeRaster(carbon_masked, 
+            file.path(out_dir, "availability_carbon_naturebase_100m.tif", ), 
             overwrite = TRUE)
 
 
 
+### 5B. CSA's (Heidi's) Carbon Data ----------------------------
+### Also mask availability w/carbon data generated from Heidi Hawkins
+
+## Read in availability layer (if needed)
+avail_r <- rast(file.path(out_dir, "availability_ssa_100m.tif"))
+
+ssa_v <- project(ssa_v, avail_r)
+
+## Directory for data
+afc_dir <- file.path(data, "carbon/Heidi_AfRange")
+
+## Only want the 3 rasters of mean difference of carbon
+       ## **NOTE**: Double-check this is right!
+afc_fnames <- list.files(afc_dir,
+                         pattern = "MEAN_DIFF.*\\.tif$",
+                         full.names = TRUE)
+
+## Add up ABG, BGB, and SOC rasters
+afc_r <- rast(afc_fnames)
+afc_sum_r <- app(afc_r, sum, na.rm = TRUE) %>% 
+  project(., y = crs(avail_r))
 
 
+## Approach 1: Keep larger resolution for carbon mask ---
+
+## aggregate availability layer to match resolution of carbon data
+factor <- floor(res(afc_sum_r)[1] / res(avail_r)[1])
+avail_agg_r <- aggregate(avail_r, factor, fun = "modal")
+
+## resample carbon data to match availability, then mask
+avail_agg_r[avail_agg_r == 0] <- NA
+afc_mask <- resample(afc_sum_r, avail_agg_r, method = "bilinear") %>% 
+  mask(., avail_agg_r)
+
+plot(afc_mask)
+plot(ssa_v, add = TRUE)
+
+## save output
+writeRaster(afc_mask, 
+            file.path(out_dir, "carbon_meandiff_avail_lowres.tif"),
+            overwrite = TRUE)
 
 
+## Approach 2: Get smaller resolution outputs for carbon mask ---
+factor <- ceiling(res(afc_sum_r)[1] / res(avail_r)[1])
+afc_disagg <- disagg(afc_sum_r, factor, method = "near") ## using near to retain "original resolution" as best as possibe
 
+## resample carbon data to match availability, then mask 
+afc_resamp <- resample(afc_disagg, avail_r, method = "bilinear")
+afc_mask <- mask(afc_resamp, ssa_v) %>% 
+  mask(., avail_r, maskvalues = 0)
 
+plot(afc_mask)
+plot(ssa_v, add = TRUE)
 
+## save output
+writeRaster(afc_mask,
+            file.path(out_dir, "carbon_meandiff_avail_100m.tif"),
+            overwrite = TRUE)
 
 
 
