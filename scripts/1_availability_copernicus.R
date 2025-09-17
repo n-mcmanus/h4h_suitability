@@ -311,7 +311,7 @@ avail_agg_r <- aggregate(avail_r, factor, fun = "modal")
 
 ## resample carbon data to match availability, then mask
 avail_agg_r[avail_agg_r == 0] <- NA
-afc_mask <- resample(afc_sum_r, avail_agg_r, method = "bilinear") %>% 
+afc_mask <- resample(afc_sum_r, avail_agg_r, method = "near") %>% 
   mask(., avail_agg_r)
 
 plot(afc_mask)
